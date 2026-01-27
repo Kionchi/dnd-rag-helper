@@ -1,0 +1,8 @@
+services:
+  dnd-bot:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./db:/app/db
+      - ./data:/app/data

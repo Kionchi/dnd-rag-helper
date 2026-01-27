@@ -1,0 +1,17 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local vector database
+db/
+
+# Secrets
+.env
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
