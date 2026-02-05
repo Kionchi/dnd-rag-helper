@@ -5,7 +5,8 @@ from typing import List
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters.markdown import MarkdownHeaderTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 
@@ -106,7 +107,7 @@ def build_vector_store(chunks: List, db_dir: str) -> Chroma:
 
 
 def run_ingestion(
-    data_dir: str = "data/srd",
+    data_dir: str = "data/DND5E.SRD.Wiki-master",
     db_dir: str = "db",
 ) -> None:
     """Main entry point for the Markdown -> Chroma ingestion pipeline."""
