@@ -8,14 +8,12 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_text_splitters.markdown import MarkdownHeaderTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_ollama import OllamaEmbeddings
 
 
 def load_env() -> None:
-    """Load environment variables from .env (expects OPENAI_API_KEY)."""
+    """Load environment variables from .env (optional, for future use)."""
     load_dotenv()
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is not set in the environment or .env file")
 
 
 def load_markdown_documents(data_dir: str) -> List:
@@ -85,14 +83,15 @@ def split_markdown_to_chunks(docs: List) -> List:
     return final_chunks
 
 
-def build_vector_store(chunks: List, db_dir: str) -> Chroma:
-    """Build a local Chroma vector store in db_dir using OpenAIEmbeddings."""
+def build_vector_store(chunks: List, db_dir: str, embedding_model: str = "nomic-embed-text") -> Chroma:
+    """Build a local Chroma vector store in db_dir using Ollama embeddings."""
     print(f"Creating Chroma vector store in directory: {db_dir} ...")
+    print(f"Using Ollama embedding model: {embedding_model}")
 
     persist_directory = Path(db_dir)
     persist_directory.mkdir(parents=True, exist_ok=True)
 
-    embeddings = OpenAIEmbeddings()  # uses OPENAI_API_KEY from env
+    embeddings = OllamaEmbeddings(model=embedding_model)
 
     vectordb = Chroma.from_documents(
         documents=chunks,
@@ -109,16 +108,15 @@ def build_vector_store(chunks: List, db_dir: str) -> Chroma:
 def run_ingestion(
     data_dir: str = "data/DND5E.SRD.Wiki-master",
     db_dir: str = "db",
+    embedding_model: str = "nomic-embed-text",
 ) -> None:
-    """Main entry point for the Markdown -> Chroma ingestion pipeline."""
-    print("=== Starting ingestion process ===")
+    """Main entry point for the Markdown -> Chroma ingestion pipeline (Ollama local)."""
+    print("=== Starting ingestion process (Ollama) ===")
     load_env()
 
     docs = load_markdown_documents(data_dir)
     chunks = split_markdown_to_chunks(docs)
-    build_vector_store(chunks, db_dir)
-
-    print("=== Ingestion process completed ===")
+    build_vector_store(chunks, db_dir, embedding_model=embedding_model)
 
 
 if __name__ == "__main__":
