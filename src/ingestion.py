@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
+from langchain_core.documents import Document
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -10,6 +12,7 @@ from langchain_text_splitters.markdown import MarkdownHeaderTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_ollama import OllamaEmbeddings
 
+HEADER_KEYS = ("h1", "h2", "h3")
 
 def load_env() -> None:
     """Load environment variables from .env (optional, for future use)."""
@@ -80,8 +83,25 @@ def split_markdown_to_chunks(docs: List) -> List:
 
     final_chunks = text_splitter.split_documents(header_docs)
     print(f"After final splitting: {len(final_chunks)} chunks.")
+    final_chunks = _inject_header_context_into_chunks(final_chunks)
     return final_chunks
 
+
+def _inject_header_context_into_chunks(chunks: List[Document]) -> List[Document]:
+    """Prepend header hierarchy (h1 > h2 > h3) to each chunk's page_content so every chunk
+    is self-descriptive and retrievable by entity name (e.g. 'Fireball' + 'damage')."""
+    result = []
+    for doc in chunks:
+        parts = [doc.metadata.get(k) for k in HEADER_KEYS if doc.metadata.get(k)]
+        parts = [str(p).strip() for p in parts if p]
+        if parts:
+            prefix = " > ".join(parts) + ": "
+            result.append(
+                Document(page_content=prefix + doc.page_content, metadata=dict(doc.metadata))
+            )
+        else:
+            result.append(Document(page_content=doc.page_content, metadata=dict(doc.metadata)))
+    return result
 
 def build_vector_store(chunks: List, db_dir: str, embedding_model: str = "nomic-embed-text") -> Chroma:
     """Build a local Chroma vector store in db_dir using Ollama embeddings."""
