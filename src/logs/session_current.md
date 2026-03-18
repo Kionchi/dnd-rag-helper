@@ -1,0 +1,4 @@
+- [0s–60s] The party enters the old keep and meets a nervous guard. They negotiate safe passage in exchange for clearing the basement.
+- [60s–90s] The wizard casts Fireball on the swarm of rats.
+- [0s–60s] The party enters the old keep and meets a nervous guard. They negotiate safe passage in exchange for clearing the basement.
+- [60s–90s] The wizard casts Fireball on the swarm of rats.

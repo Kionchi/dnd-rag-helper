@@ -1,55 +1,56 @@
 """
-D&D SRD RAG bot: answers questions using the ingested Chroma vector store and Ollama.
-Run from project root: py src/bot.py
+D&D SRD + Session Notes RAG bot.
+
+- SRD rules are grounded only in the SRD Chroma collection (default: "langchain")
+- Session notes are used for campaign/table-specific questions
 """
 import re
 from pathlib import Path
 
 from langchain_community.vectorstores import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "db"
+
 EMBEDDING_MODEL = "nomic-embed-text"
 LLM_MODEL = "phi4:14b"
 
 STOPWORDS = frozenset(
-    {"a", "an", "the", "how", "does", "do", "what", "when", "where", "tell", "me", "about", "more", "spell", "work", "is", "are", "can", "of", "in", "to", "and", "for"}
+    {
+        "a", "an", "the", "how", "does", "do", "what", "when", "where", "tell", "me", "about",
+        "more", "spell", "work", "is", "are", "can", "of", "in", "to", "and", "for",
+        "please"
+    }
 )
 
 
 def _extract_entity(question: str) -> str:
-    """Extract the main entity (e.g. spell/monster/rule name) from the question for re-ranking."""
+    """Extract a likely entity name (e.g., Fireball) from the question for SRD retrieval bias."""
     words = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", question)
     candidates = [w for w in words if w.lower() not in STOPWORDS and len(w) > 1]
     if not candidates:
         return question.strip() or "unknown"
-    entity = max(candidates, key=len)
-    return entity.strip().title()
+    return max(candidates, key=len).strip().title()
 
 
 def _retrieve_and_rerank(vectorstore, question: str, entity: str, k_retrieve: int = 30, k_keep: int = 12):
-    """Metadata-first retrieval + vector fallback.
-
-    1) Try exact entity match via Markdown header metadata (h3).
-    2) Fallback to vector similarity search.
-    3) Optional: merge + re-rank to keep '{entity}: ' chunks first.
-    """
-    # 1) Deterministic lookup by header metadata (works because ingestion stores h3='Fireball')
+    """Metadata-first retrieval for SRD (tries h3=entity, then similarity fallback)."""
+    # 1) Deterministic lookup by Markdown header metadata (h3)
     res = vectorstore.get(where={"h3": entity}, include=["documents", "metadatas"], limit=8)
     docs_meta = []
     for text, meta in zip(res.get("documents") or [], res.get("metadatas") or []):
         if text:
             docs_meta.append(Document(page_content=text, metadata=meta or {}))
 
-    # 2) Vector fallback (bigger pool)
+    # 2) Vector fallback
     docs_vec = vectorstore.similarity_search(question, k=k_retrieve)
 
-    # 3) Merge (metadata first), dedupe, then re-rank so '{entity}: ' chunks come first
+    # 3) Merge + re-rank by prefix
     combined = list(docs_meta)
     seen = {d.page_content[:200] for d in combined}
     for d in docs_vec:
@@ -84,8 +85,13 @@ def _retrieve_and_rerank(vectorstore, question: str, entity: str, k_retrieve: in
 
     return final_docs[:k_keep]
 
-def load_vector_store():
-    """Load Chroma vector store from db/ using the same embeddings as ingestion."""
+
+def load_srd_vector_store():
+    """
+    Load the SRD rules vector store.
+    IMPORTANT: during ingestion you used Chroma.from_documents without specifying collection_name,
+    so the default collection name is typically "langchain".
+    """
     embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
     return Chroma(
         persist_directory=str(DB_PATH),
@@ -93,47 +99,99 @@ def load_vector_store():
     )
 
 
+def load_session_notes_store():
+    """Load the session notes vector store (collection_name=session_notes)."""
+    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    return Chroma(
+        collection_name="session_notes",
+        persist_directory=str(DB_PATH),
+        embedding_function=embeddings,
+    )
+
+
 def main():
-    print("Loading D&D SRD vector store...")
-    vectorstore = load_vector_store()
+    print("Loading SRD vector store...")
+    srd_store = load_srd_vector_store()
+
+    print("Loading session notes vector store...")
+    session_notes_store = load_session_notes_store()
 
     llm = ChatOllama(model=LLM_MODEL, temperature=0.2)
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a helpful assistant that answers questions about D&D 5e rules using the SRD (System Reference Document).
-Use ONLY the following context from the SRD. If the answer is not in the context, say so and do not invent rules.
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are a professional Dungeon Master assistant.
 
-Context from SRD:
-{context}"""),
-        ("human", "{question}"),
-    ])
+You will receive two context sections:
+1) SESSION NOTES: what happened during the actual game (campaign/table facts).
+2) SRD RULES CONTEXT: official D&D 5e SRD rule text.
+
+Rules for answering:
+- If the user asks about rules, mechanics, spells, actions, or DCs: use ONLY SRD RULES CONTEXT.
+- If the user asks about what happened in the campaign (events, negotiations, what we did): use ONLY SESSION NOTES.
+- If the requested rule is not present in SRD RULES CONTEXT: do NOT invent rules.
+  Instead, suggest an appropriate Ability Check (and briefly state which ability + a reasonable DC guess).
+- Be grounded and concise. Fantasy-scholar tone.
+
+SESSION NOTES:
+{session_context}
+
+SRD RULES CONTEXT:
+{srd_context}
+""",
+            ),
+            ("human", "{question}"),
+        ]
+    )
 
     def format_docs(docs):
         return "\n\n---\n\n".join(doc.page_content for doc in docs)
 
     def get_context(question: str):
         entity = _extract_entity(question)
-        docs = _retrieve_and_rerank(vectorstore, question, entity)
-        return format_docs(docs)
+
+        # SRD context
+        srd_docs = _retrieve_and_rerank(srd_store, question, entity)
+        srd_context = format_docs(srd_docs)
+
+        # Session notes context
+        notes_docs = session_notes_store.similarity_search(question, k=5)
+        session_context = format_docs(notes_docs)
+
+        return {
+            "session_context": session_context,
+            "srd_context": srd_context,
+        }
 
     chain = (
-        {"context": get_context, "question": RunnablePassthrough()}
+        {"session_context": lambda q: get_context(q)["session_context"],
+         "srd_context": lambda q: get_context(q)["srd_context"],
+         "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
 
-    print("Ready. Ask about D&D 5e rules (e.g. 'How does Fireball work?'). Type 'quit' or 'exit' to stop.\n")
+    print(
+        "Ready. Ask about D&D rules or about what happened last session.\n"
+        "Examples: 'How much damage does Fireball do?' or 'What did we do last session?'\n"
+        "Type 'quit' or 'exit' to stop.\n"
+    )
+
     while True:
         try:
             question = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             break
+
         if not question:
             continue
         if question.lower() in ("quit", "exit", "q"):
             print("Bye.")
             break
+
         print("Bot:", end=" ", flush=True)
         try:
             for chunk in chain.stream(question):
